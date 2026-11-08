@@ -1,0 +1,19 @@
+{
+  "host": "127.0.0.1",
+  "port": 5400,
+  "file_path": "/home/tsuji/work/babirl-test/data",
+  "data_format": "ridf",
+  "filename_pattern": "{runname}{runnumber}*.{data_format}",
+  "active_daq_states": [
+   "running"
+  ],
+  "excluded_daq_states": [
+    "running"
+  ],
+  "registered_daq_states": [
+    "running",
+    "nssta",
+    "stopped"
+  ],
+  "runnumber_format": "04d"
+}
