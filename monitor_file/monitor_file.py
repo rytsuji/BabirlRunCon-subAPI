@@ -44,6 +44,10 @@ def load_config(path):
             raise ValueError(f"{key} must be a list of non-empty strings")
     if not set(config["active_daq_states"] + config["excluded_daq_states"]) <= set(config["registered_daq_states"]):
         raise ValueError("Active and excluded states must be registered")
+    recursive = config.get("recursive", False)
+    if type(recursive) is not bool:
+        raise ValueError("recursive must be a boolean")
+    config["recursive"] = recursive
     number_format = config.get("runnumber_format", "04d")
     if not isinstance(number_format, str) or not re.fullmatch(r"(?:0?[1-9][0-9]?)?d", number_format):
         raise ValueError("runnumber_format must be d or an integer format such as 04d (width 1-99)")
@@ -90,17 +94,28 @@ def create_app(config_path="config.json"):
                 pattern = config["filename_pattern"].format(runname=runname, runnumber=runnumber, data_format=config["data_format"])
                 current = {}
                 snapshot = {}
-                # Scan only direct children; stat matching regular files without reading contents.
-                with os.scandir(config["file_path"]) as entries:
-                    for entry in entries:
-                        if fnmatch.fnmatchcase(entry.name, pattern):
-                            try:
-                                info = entry.stat(follow_symlinks=False)
-                            except FileNotFoundError:
-                                continue  # A file may disappear during acquisition.
-                            if stat.S_ISREG(info.st_mode):
-                                current[entry.name] = info.st_size
-                                snapshot[entry.name] = (info.st_size, info.st_mtime_ns)
+                # Relative paths distinguish identical filenames in different directories.
+                root = config["file_path"]
+
+                def scan(directory):
+                    with os.scandir(directory) as entries:
+                        for entry in entries:
+                            if config["recursive"] and entry.is_dir(follow_symlinks=False):
+                                try:
+                                    scan(Path(entry.path))
+                                except FileNotFoundError:
+                                    continue  # A directory may disappear during acquisition.
+                            elif fnmatch.fnmatchcase(entry.name, pattern):
+                                try:
+                                    info = entry.stat(follow_symlinks=False)
+                                except FileNotFoundError:
+                                    continue  # A file may disappear during acquisition.
+                                if stat.S_ISREG(info.st_mode):
+                                    name = Path(entry.path).relative_to(root).as_posix()
+                                    current[name] = info.st_size
+                                    snapshot[name] = (info.st_size, info.st_mtime_ns)
+
+                scan(root)
                 files = [{"name": name, "size": human_size(size)}
                          for name, size in sorted(current.items())]
                 if not active:
