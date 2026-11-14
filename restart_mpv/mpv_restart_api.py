@@ -61,6 +61,9 @@ def create_app(config):
             with opener.open(request, timeout=15) as result:
                 if result.status != 200:
                     return response("fail", f"MPV returned HTTP {result.status}", 502)
+                # CGI may still be restarting the process after sending headers.
+                # Consume its response before closing the connection or returning.
+                result.read()
             return response("ok", "MPV accepted the Restart babildes request; process restart is not verified")
         except urllib.error.HTTPError as exc:
             code = exc.code
