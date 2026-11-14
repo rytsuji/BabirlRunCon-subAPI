@@ -16,6 +16,12 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 
+def natural_sort_key(path):
+    """Compare digit sequences numerically, with other text compared literally."""
+    return tuple((1, int(part)) if part.isdigit() else (0, part)
+                 for part in re.split(r"([0-9]+)", path))
+
+
 def human_size(size):
     value = float(size)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
@@ -117,7 +123,8 @@ def create_app(config_path="config.json"):
 
                 scan(root)
                 files = [{"name": name, "size": human_size(size)}
-                         for name, size in sorted(current.items())]
+                         for name, size in sorted(current.items(),
+                                                  key=lambda item: (natural_sort_key(item[0]), item[0]))]
                 if not active:
                     return response("ok", f"File listing only; update monitoring is disabled (DAQ state: {daq_state})",
                                     file=files)
