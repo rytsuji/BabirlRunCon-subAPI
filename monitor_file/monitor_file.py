@@ -30,6 +30,30 @@ def human_size(size):
         value /= 1024
 
 
+def run_file_sizes(root, pattern, recursive):
+    """Sizes of regular files matching pattern, keyed by path relative to root."""
+    sizes = {}
+
+    def scan(directory):
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if recursive and entry.is_dir(follow_symlinks=False):
+                    try:
+                        scan(Path(entry.path))
+                    except FileNotFoundError:
+                        continue
+                elif fnmatch.fnmatchcase(entry.name, pattern):
+                    try:
+                        info = entry.stat(follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISREG(info.st_mode):
+                        sizes[Path(entry.path).relative_to(root).as_posix()] = info.st_size
+
+    scan(root)
+    return sizes
+
+
 def load_config(path):
     path = Path(path).resolve()
     config = json.loads(path.read_text(encoding="utf-8"))
@@ -147,6 +171,28 @@ def create_app(config_path="config.json"):
             except Exception:
                 logger.exception("File monitoring failed")
                 return JSONResponse(status_code=500, content=response("fail", f"File monitoring failed (DAQ state: {daq_state})"))
+
+    @app.get("/size")
+    def size(
+        runname: str = Query(..., min_length=1, max_length=128, pattern=r"^[^/\\*?\[\]{}]+$"),
+        runnumber: str = Query(..., min_length=1, max_length=32, pattern=r"^[0-9]+$"),
+    ):
+        """Total size of one Run's files, for the Web GUI File size API."""
+        pattern = config["filename_pattern"].format(runname=runname, runnumber=format(int(runnumber), config["runnumber_format"]),
+                                                    data_format=config["data_format"])
+        try:
+            sizes = run_file_sizes(config["file_path"], pattern, config["recursive"])
+        except FileNotFoundError:
+            return response("error", "Data directory not found", bytes=None, file=[])
+        except Exception:
+            logger.exception("File size scan failed")
+            return JSONResponse(status_code=500, content=response("fail", "File size scan failed"))
+        if not sizes:
+            return response("error", "No matching files found", bytes=None, file=[])
+        files = [{"name": name, "size": human_size(size)}
+                 for name, size in sorted(sizes.items(), key=lambda item: (natural_sort_key(item[0]), item[0]))]
+        total = sum(sizes.values())
+        return response("ok", f"Total {human_size(total)}", bytes=total, file=files)
 
     return app
 
