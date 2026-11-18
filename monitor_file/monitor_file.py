@@ -149,25 +149,43 @@ def create_app(config_path="config.json"):
                 files = [{"name": name, "size": human_size(size)}
                          for name, size in sorted(current.items(),
                                                   key=lambda item: (natural_sort_key(item[0]), item[0]))]
+                total_bytes = sum(current.values())
+                total_size = human_size(total_bytes)
+
                 if not active:
                     return response("ok", f"File listing only; update monitoring is disabled (DAQ state: {daq_state})",
-                                    file=files)
+                                    data_rate=None,total_size=total_size,file=files)
                 old = previous.get(key)
                 previous[key] = snapshot
                 if not current:
-                    return response("error", f"No matching files found (DAQ state: {daq_state})", file=files)
+                    return response("error", f"No matching files found (DAQ state: {daq_state})",
+                                    data_rate=None,total_size=total_size,file=files)
                 if old is None:
                     return response("ok", f"Baseline recorded; updates will be checked on the next request (DAQ state: {daq_state})",
-                                    file=files)
+                                    data_rate=None,total_size=total_size,file=files)
+
+                if old:
+                    old_bytes = sum(size for size, _ in old.values())
+                    old_mtime = max(mtime for _, mtime in old.values())
+                    curr_mtime = max(mtime for _, mtime in snapshot.values())
+                    dt = (curr_mtime - old_mtime) / 1e9
+                    rate = max(0, total_bytes - old_bytes) / dt if dt > 0 else 0.0
+                    data_rate = f"{human_size(rate)}/s"
+                else:
+                    data_rate = None                    
                 changed = any(name not in old or metadata != old[name] for name, metadata in snapshot.items())
                 if not changed:
-                    return response("error", f"Files have not been updated (DAQ state: {daq_state})", file=files)
-                return response("ok", f"Files updated (DAQ state: {daq_state})", file=files)
+                    return response("error", f"Files have not been updated (DAQ state: {daq_state})",
+                                    data_rate=data_rate,total_size=total_size,file=files)
+                return response("ok", f"Files updated (DAQ state: {daq_state})",
+                                data_rate=data_rate,total_size=total_size,file=files)
             except FileNotFoundError:
                 previous.pop(key, None)
                 if active:
-                    return response("error", f"Data directory not found (DAQ state: {daq_state})", file=[])
-                return response("ok", f"Data directory not found; update monitoring is disabled (DAQ state: {daq_state})", file=[])
+                    return response("error", f"Data directory not found (DAQ state: {daq_state})", 
+                                    data_rate=None,total_size=human_size(0), file=[] )
+                return response("ok", f"Data directory not found; update monitoring is disabled (DAQ state: {daq_state})",
+                                data_rate=None,total_size=human_size(0), file=[] )
             except Exception:
                 logger.exception("File monitoring failed")
                 return JSONResponse(status_code=500, content=response("fail", f"File monitoring failed (DAQ state: {daq_state})"))
