@@ -1,5 +1,5 @@
 {
-  "host": "127.0.0.1",
+  "host": "10.42.0.53",
   "port": 5400,
   "file_path": "/data/DATA",
   "data_format": "dat",
