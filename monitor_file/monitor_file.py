@@ -54,6 +54,30 @@ def run_file_sizes(root, pattern, recursive):
     return sizes
 
 
+def size_sources(config, base):
+    """Settings for /size/<name>. Keys left out use the main settings."""
+    keys = {"file_path", "data_format", "filename_pattern", "runnumber_format", "recursive"}
+    entries = config.get("size_sources", {})
+    if not isinstance(entries, dict):
+        raise ValueError("size_sources must be an object")
+    sources = {}
+    for name, entry in entries.items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or not isinstance(entry, dict) or not set(entry) <= keys:
+            raise ValueError(f"Invalid size_sources entry: {name}")
+        source = {**config, **entry}
+        root = Path(source["file_path"])
+        source["file_path"] = root if root.is_absolute() else base / root
+        source["data_format"] = source["data_format"].lstrip(".")
+        if (not source["data_format"] or any(c in source["data_format"] for c in '/\\*?[]')
+                or type(source["recursive"]) is not bool
+                or not re.fullmatch(r"(?:0?[1-9][0-9]?)?d", str(source["runnumber_format"]))
+                or any(c in source["filename_pattern"].format(runname="run", runnumber="001", data_format=source["data_format"])
+                       for c in '/\\')):
+            raise ValueError(f"Invalid size_sources entry: {name}")
+        sources[name] = source
+    return sources
+
+
 def load_config(path):
     path = Path(path).resolve()
     config = json.loads(path.read_text(encoding="utf-8"))
@@ -190,16 +214,23 @@ def create_app(config_path="config.json"):
                 logger.exception("File monitoring failed")
                 return JSONResponse(status_code=500, content=response("fail", f"File monitoring failed (DAQ state: {daq_state})"))
 
+    sources = size_sources(config, Path(config_path).resolve().parent)
+
     @app.get("/size")
+    @app.get("/size/{name}")
     def size(
         runname: str = Query(..., min_length=1, max_length=128, pattern=r"^[^/\\*?\[\]{}]+$"),
         runnumber: str = Query(..., min_length=1, max_length=32, pattern=r"^[0-9]+$"),
+        name: str = "",
     ):
-        """Total size of one Run's files, for the Web GUI File size API."""
-        pattern = config["filename_pattern"].format(runname=runname, runnumber=format(int(runnumber), config["runnumber_format"]),
-                                                    data_format=config["data_format"])
+        """Total size of one Run's files, for the Web GUI File size API. /size/<name> uses size_sources."""
+        if name and name not in sources:
+            return JSONResponse(status_code=404, content=response("fail", f"Unknown size source: {name}"))
+        source = sources[name] if name else config
+        pattern = source["filename_pattern"].format(runname=runname, runnumber=format(int(runnumber), source["runnumber_format"]),
+                                                    data_format=source["data_format"])
         try:
-            sizes = run_file_sizes(config["file_path"], pattern, config["recursive"])
+            sizes = run_file_sizes(source["file_path"], pattern, source["recursive"])
         except FileNotFoundError:
             return response("error", "Data directory not found", bytes=None, file=[])
         except Exception:
