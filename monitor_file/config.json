@@ -16,5 +16,12 @@
     "stopped"
   ],
   "runnumber_format": "04d",
-  "recursive": true
+  "recursive": true,
+  "size_sources": {
+    "trb3": {
+      "file_path": "/data/DAQ/hld/strasse_ccb_2026/",
+      "data_format": "hld",
+      "filename_pattern": "{runname}{runnumber}_*.{data_format}"
+    }
+  }
 }
