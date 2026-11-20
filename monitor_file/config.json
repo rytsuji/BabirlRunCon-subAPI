@@ -4,6 +4,7 @@
   "file_path": "/data/DATA",
   "data_format": "dat",
   "filename_pattern": "{runname}{runnumber}_*.{data_format}",
+  "max_unchanged_sec": 40,
   "active_daq_states": [
     "running"
   ],

@@ -3,9 +3,11 @@ import argparse
 import fnmatch
 import json
 import logging
+import math
 import os
 import re
 import stat
+import time
 from pathlib import Path
 from threading import Lock
 
@@ -109,6 +111,11 @@ def load_config(path):
     pattern = config["filename_pattern"].format(runname="run", runnumber="001", data_format=extension)
     if any(c in pattern for c in '/\\'):
         raise ValueError("filename_pattern must not contain directories")
+    max_unchanged_sec = config.get("max_unchanged_sec", 40.0)
+    if (isinstance(max_unchanged_sec, bool) or not isinstance(max_unchanged_sec, (int, float))
+            or not math.isfinite(max_unchanged_sec) or not 0 <= max_unchanged_sec <= 3600):
+        raise ValueError("max_unchanged_sec must be a finite number between 0 and 3600")
+    config["max_unchanged_sec"] = float(max_unchanged_sec)
     return config
 
 
@@ -178,38 +185,48 @@ def create_app(config_path="config.json"):
 
                 if not active:
                     return response("ok", f"File listing only; update monitoring is disabled (DAQ state: {daq_state})",
-                                    data_rate=None,total_size=total_size,file=files)
+                                    data_rate=None, total_size=total_size, file=files)
+                now = time.monotonic()
                 old = previous.get(key)
-                previous[key] = snapshot
                 if not current:
+                    previous[key] = {"snapshot": snapshot, "last_updated_at": now}
                     return response("error", f"No matching files found (DAQ state: {daq_state})",
-                                    data_rate=None,total_size=total_size,file=files)
+                                    data_rate=None, total_size=total_size, file=files)
                 if old is None:
+                    previous[key] = {"snapshot": snapshot, "last_updated_at": now}
                     return response("ok", f"Baseline recorded; updates will be checked on the next request (DAQ state: {daq_state})",
-                                    data_rate=None,total_size=total_size,file=files)
+                                    data_rate=None, total_size=total_size, file=files)
 
-                if old:
-                    old_bytes = sum(size for size, _ in old.values())
-                    old_mtime = max(mtime for _, mtime in old.values())
+                old_snapshot = old["snapshot"]
+                if old_snapshot:
+                    old_bytes = sum(size for size, _ in old_snapshot.values())
+                    old_mtime = max(mtime for _, mtime in old_snapshot.values())
                     curr_mtime = max(mtime for _, mtime in snapshot.values())
                     dt = (curr_mtime - old_mtime) / 1e9
                     rate = max(0, total_bytes - old_bytes) / dt if dt > 0 else 0.0
                     data_rate = f"{human_size(rate)}/s"
                 else:
-                    data_rate = None                    
-                changed = any(name not in old or metadata != old[name] for name, metadata in snapshot.items())
+                    data_rate = None
+                changed = any(name not in old_snapshot or metadata != old_snapshot[name] for name, metadata in snapshot.items())
+                last_updated_at = now if changed else old["last_updated_at"]
+                previous[key] = {"snapshot": snapshot, "last_updated_at": last_updated_at}
                 if not changed:
-                    return response("error", f"Files have not been updated (DAQ state: {daq_state})",
-                                    data_rate=data_rate,total_size=total_size,file=files)
+                    stalled_for = now - last_updated_at
+                    limit_sec = config["max_unchanged_sec"]
+                    if stalled_for >= limit_sec:
+                        return response("error", f"Files have not been updated for {stalled_for:.1f}s (max: {limit_sec:g}s; DAQ state: {daq_state})",
+                                        data_rate=data_rate, total_size=total_size, file=files)
+                    return response("ok", f"No file updates for {stalled_for:.1f}s (max: {limit_sec:g}s; DAQ state: {daq_state})",
+                                    data_rate=data_rate, total_size=total_size, file=files)
                 return response("ok", f"Files updated (DAQ state: {daq_state})",
-                                data_rate=data_rate,total_size=total_size,file=files)
+                                data_rate=data_rate, total_size=total_size, file=files)
             except FileNotFoundError:
                 previous.pop(key, None)
                 if active:
-                    return response("error", f"Data directory not found (DAQ state: {daq_state})", 
-                                    data_rate=None,total_size=human_size(0), file=[] )
+                    return response("error", f"Data directory not found (DAQ state: {daq_state})",
+                                    data_rate=None, total_size=human_size(0), file=[])
                 return response("ok", f"Data directory not found; update monitoring is disabled (DAQ state: {daq_state})",
-                                data_rate=None,total_size=human_size(0), file=[] )
+                                data_rate=None, total_size=human_size(0), file=[])
             except Exception:
                 logger.exception("File monitoring failed")
                 return JSONResponse(status_code=500, content=response("fail", f"File monitoring failed (DAQ state: {daq_state})"))
